@@ -1,0 +1,444 @@
+<html><head>
+        <script type="text/javascript">
+            var URLSRequested = [];
+            var FilesAccessed = [];
+            var APICalls = [];
+            
+            // If true, the analyzer displays an alert box whenever the script calls WScript.echo
+            // If false, the analyzer prints the echo message to console
+            var AlertEchos = false; 
+            
+            // calls Console.trace() whenever addAPI is called to allow for easier debugging
+            var DEBUG_SCRIPT = false;
+            
+            var TODAY = new Date();
+            
+            // Simulate downloaded payload in-order to trick malware into "executing"
+            var payloadHeader = "payload data";
+            //var payloadHeader = "\u001D\u0020 payload data";
+            
+            // If the payloadLength is longer than the header length, the rest is
+            // Filled using zero-width spaces. Can also fill using other characters.
+            var payloadLength = payloadHeader.length;
+            var simulatedPayload = payloadHeader;
+            
+            // Optionally fill the simulated payload with a number of zero-width spaces
+            // to trick malware into thinking the payload is a certain size
+            for(var i = 0; i < payloadLength - payloadHeader.length; i++) {
+                simulatedPayload += "\u200B"; // 0x200B = Zero-width space
+            }
+            
+            function addURL(a) {
+                if(URLSRequested.indexOf(a) < 0) {
+                    URLSRequested.push(a);
+                    document.getElementById("urls").value += a+"\n";
+                }
+            }
+            
+            function addFile(a) {
+                if(FilesAccessed.indexOf(a) < 0) {
+                    FilesAccessed.push(a);
+                    document.getElementById("files").value += a+"\n";
+                }
+            }
+            
+            function addAPI(a) {
+                if(DEBUG_SCRIPT) {console.trace(a);}
+                APICalls.push(a);
+                document.getElementById("api").value += a+"\n";
+            }
+            
+            // Resets the state of the anaylzer
+            function clearAll(a) {
+                totalEvals = 0;
+                URLSRequested = []
+                FilesAccessed = [];
+                APICalls = [];
+                
+                document.getElementById("urls").value = "";
+                document.getElementById("files").value = "";
+                document.getElementById("api").value = "";
+                
+                // Possible bug: doesn't clear eval'd code
+                var oldScript = document.getElementById("maliciousCode");
+                if(oldScript !== null) {
+                    oldScript.remove();
+                }
+            }
+            
+            // Buggy
+            function isFunction(f) {
+                return typeof f === "function";
+            }
+            
+            // Emulates JScript's case-insensitivity when accessing ActiveX object properties
+            var defaultProxyHandler = {
+                get: function(target, name) {
+                    if(typeof name === "symbol") {
+                        return function() {return "Windows Script Host";};
+                    }
+                    if (name.toLowerCase() in target) {
+                        if(!isFunction(target[name.toLowerCase])) {
+                            //addAPI("Accessed Property: " + name);
+                        }
+                        return target[name.toLowerCase()];
+                    } else {
+                        console.log("Missing Property in " + target._OBJTYPEPROPERTY + ": " + name);
+                    }
+                    return undefined;
+                },
+                set: function(target, name, value) {
+                    addAPI("Set Property: " + target._OBJTYPEPROPERTY + "." + name + " = " + value);
+                    if (name.toLowerCase() in target) {
+                        if(!isFunction(target[name.toLowerCase])) {
+                            //addAPI("Accessed Property: " + name);
+                        }
+                        target[name.toLowerCase()] = value;
+                    } else {
+                        console.log("Missing Property in " + target._OBJTYPEPROPERTY + ": " + name);
+                    }
+                }
+            };
+            
+            var WinHTTPProxyHandler = {
+                get: function(target, name) {
+                    if (name.toLowerCase === "option") {
+                        return "";
+                    }
+                    if (name.toLowerCase() in target) {
+                        if(!isFunction(target[name.toLowerCase])) {
+                            //addAPI("Accessed Property: " + name);
+                        }
+                        return target[name.toLowerCase()];
+                    } else {
+                        console.log("Missing Property in " + target._OBJTYPEPROPERTY + ": " + name);
+                    }
+                    return undefined;
+                },
+                set: function(target, name, value) {
+                    addAPI("Set Property: " + target._OBJTYPEPROPERTY + "." + name + " = " + value);
+                    if (name.toLowerCase() in target) {
+                        if(!isFunction(target[name.toLowerCase])) {
+                            //addAPI("Accessed Property: " + name);
+                        }
+                        target[name.toLowerCase()] = value;
+                    } else {
+                        console.log("Missing Property in " + target._OBJTYPEPROPERTY + ": " + name);
+                    }
+                }
+            };
+            
+            function createProxy(objType, obj, handler) {
+                obj._OBJTYPEPROPERTY = objType;
+                if(typeof handler === typeof undefined) {
+                    return new Proxy(obj, defaultProxyHandler);    
+                } else {
+                    return new Proxy(obj, handler);
+                }
+            }
+            
+            // TODO: Possibly emulate file system and record file reads/writes/deletes
+            var FileSystem = {};
+            
+            var ActiveXObject = function (a, b) {
+                if (!b) {
+                    addAPI("ActiveXObject(\"" + a + "\")");
+                }
+                switch (a.toUpperCase()) {
+                    case "MSXML2.XMLHTTP":
+                        return createProxy(a, {
+                            open: function (a, b, c) {
+                                addURL(b);
+                                addAPI("MSXML2.XMLHTTP.open(\"" + a + "\", \"" + b + "\", " + c + ")");
+                            },
+                            send: function () {
+                                addAPI("MSXML2.XMLHTTP.send()");
+                            },
+                            status: 200,
+                            responsebody: simulatedPayload,
+                            responsetext: simulatedPayload,
+                            setrequestheader: function (a, b) {
+                                addAPI("MSXML2.XMLHTTP.setRequestHeader(\"" + a + "\", \"" + b + "\")");
+                            }
+                        });
+                    case "WSCRIPT.SHELL":
+                        return createProxy(a, {
+                            run: function (a, b, c) {
+                                var enumVal = "";
+                                if(b) {
+                                switch(b.toString()) {
+                                    case "0":
+                                    enumVal = "HideWindow";
+                                    break;
+                                }
+                                }
+                                addAPI("WScript.Shell.run(\"" + a + "\", " + b + " ["+enumVal+"], " + c + ")");
+                                return 0;
+                            },
+                            expandenvironmentstrings: function (a) {
+                                addAPI("WScript.Shell.ExpandEnvironmentStrings(\"" + a + "\")");
+                                var b = a.split("%");
+                                switch (b[1].toUpperCase()) {
+                                    case "TEMP":
+                                        return "C:/Users/FakeUser/AppData/Local/Temp" + b[2];
+                                }
+                            },
+                            regread: function(a) {
+                                addAPI("WScript.RegRead(\"" + a + "\")");
+                            }
+                        });
+                    case "ADODB.STREAM":
+                        return createProxy(a, new function() {
+                            var streamText = "";    
+                            this.size = 0;
+                            this.type = 0;
+                            this.charset = 0;
+                            this.position = 0;
+                            this.open = function () {
+                                addAPI("ADODB.Stream.open()");
+                            };
+                            this.loadfromfile = function (a) {
+                                addAPI("ADODB.Stream.LoadFromFile(\"" + a + "\")");
+                            };
+                            //this.readtext= simulatedPayload;
+                            this.close = function () {
+                                addAPI("ADODB.Stream.close()");
+                            };
+                            this.readtext = simulatedPayload;//function(a) {
+                                //return streamText.substr(0, a >= 0 ? a : streamText.length);
+                            //};
+                            this.write = function (a) {
+                                addAPI("ADODB.Stream.write(\"" + a.substr(0, 16) + "\")");
+                                streamText = a;
+                                this.size = a.length;
+                            };
+                            this.writetext = function (a) {
+                                addAPI("ADODB.Stream.writeText(\"" + a.substr(0, 16) + "..." + "\")");
+                                streamText += a;
+                                this.size += a.length;
+                            };
+                            this.savetofile = function (a, b) {
+                                addFile(a);
+                                var enumVal = "adSaveDoNotCreate";
+                                if(b) {
+                                switch(b.toString()) {
+                                    case "1":
+                                        enumVal = "adSaveCreateNotExist";
+                                        break;
+                                    case "2":
+                                        enumVal = "adSaveCreateOverWrite";
+                                        break;
+                                }
+                                }
+                                addAPI("ADODB.Stream.SaveToFile(\"" + a + "\", "+b+" [" + enumVal + "])");
+                            };
+                        });
+                    case "SCRIPTING.FILESYSTEMOBJECT":
+                        return createProxy(a, {
+                            copyfile: function (a, b, c) {
+                                addFile(a);
+                                addFile(b);
+                                addAPI("Scripting.FileSystemObject.CopyFile(\"" + a + "\", \"" + b + "\", " + c + ")");
+                            },
+                            getdrive: function (a) {
+                                addAPI("Scripting.FileSystemObject.GetDrive(\"" + a + "\")");
+                                return createProxy("Drive", new function () {
+                                    this.filesystem = a.toUpperCase() + ":\\";
+                                    this.serialnumber = 1234567;
+                                });
+                            },
+                            getdrivename: function (a) {
+                                addAPI("Scripting.FileSystemObject.GetDriveName(\"" + a + "\")");
+                                return a.charAt(0);
+                            },
+                            getfile: function (a) {
+                                addFile(a);
+                                addAPI("Scripting.FileSystemObject.GetFile(\"" + a + "\")");
+                                return createProxy("File", new function () {
+                                    this.datelastmodified = TODAY;
+                                });
+                            },
+                            getspecialfolder: function (a) {
+                                addAPI("Scripting.FileSystemObject.GetTempFolder(\"" + a + "\")");
+                                switch (a.toString()) {
+                                    case "2":
+                                        return "C:/Users/FakeUser/AppData/Local/Temp/";
+                                }
+                            },
+                            gettempname: function () {
+                                addAPI("Scripting.FileSystemObject.GetTempName()");
+                                return "tempName";
+                            },
+                            deletefile: function (a) {
+                                addFile(a);
+                                addAPI("Scripting.FileSystemObject.deleteFile(\"" + a + "\")");
+                            },
+                            createfolder: function (a) {
+                                addFile(a);
+                                addAPI("Scripting.FileSystemObject.CreateFolder(\"" + a + "\")");
+                            },
+                            fileexists: function (a) {
+                                addFile(a);
+                                addAPI("Scripting.FileSystemObject.FileExists(\"" + a + "\")");
+                                return true;
+                            },
+                            folderexists: function (a) {
+                                addFile(a);
+                                addAPI("Scripting.FileSystemObject.FolderExists(\"" + a + "\")");
+                                return true;
+                            },
+                            opentextfile: function(a, b, c, d) {
+                                addFile(a);
+                                addAPI("Scripting.FileSystemObject.OpenTextFile(\"" + a + "\", \"" + b + "\", \"" + c + "\", \"" + d + "\")");
+                                return createProxy("TextStream", {
+                                    close: function(a) {
+                                        addAPI("TextStream.Close()");
+                                    },
+                                    write: function(a) {
+                                        addAPI("TextStream.Write(\"" + a + "\")");
+                                    },
+                                    writeline: function(a) {
+                                        addAPI("TextStream.WriteLine(\"" + a + "\")");
+                                    }
+                                });
+                            }
+                        });
+                    case "WSCRIPT.NETWORK":
+                        return createProxy(a, {
+                            username: "FakeUser"
+                        });
+                    case "WINHTTP.WINHTTPREQUEST.5.1":
+                        return createProxy(a, {
+                            open: function (a, b, c) {
+                                addURL(b);
+                                addAPI("WinHttpRequest.5.1.Open(\"" + a + "\", \"" + b + "\", " + c + ")");
+                            },
+                            send: function () {
+                                addAPI("WinHttpRequest.5.1.Send()");
+                            },
+                            status: 200,
+                            responsetext: simulatedPayload,
+                            responsebody: simulatedPayload,
+                            readystate: 5,
+                            option: function(a) {
+                                var enumVal = "Unknown Enum";
+                                switch(a.toString()) {
+                                    case "0":
+                                        enumVal = "UserAgentString";
+                                        break;
+                                    case "1":
+                                        enumVal = "URL";
+                                        break;
+                                    case "2":
+                                        enumVal = "URLCodePage";
+                                        break;
+                                }
+                                addAPI("WinHttpRequest.5.1.Option(" + a + " ["+enumVal+"])");
+                                return 0;
+                            }
+                        }, WinHTTPProxyHandler);
+                    case "SCRIPTING.DICTIONARY":
+                        return createProxy(a, new function() {
+                            var dict = [];
+                            this.add = function(a, b) {
+                                dict[a] = b;
+                            };
+                            this.exists = function(a) {
+                                return typeof dict[a] !== typeof undefined; 
+                            };
+                            this.keys = function() {
+                                return Object.keys(dict);
+                            };
+                            this.item = function(a) {
+                                return dict[a];
+                            };
+                        });
+                }
+            };
+            
+            var WScript = createProxy("WScript", {
+                createobject: function (a) {
+                    addAPI("WScript.CreateObject(\"" + a + "\")");
+                    return new ActiveXObject(a, true);
+                },
+                echo: function(a) {
+                    addAPI("WScript.Echo(\"" + a + "\")");
+                    if(AlertEchos)
+                        alert(a);
+                    else
+                        console.log(a);
+                },
+                quit: function() {
+                    addAPI("WScript.Quit()");
+                },
+                scriptfullname: "WScript.ScriptFullName",
+                sleep: function(a) {
+                    addAPI("WScript.Sleep(" + a + ")");
+                },
+                toString: function() {
+                    return "Windows Script Host";
+                }
+            });
+            
+            var WSH = "Windows Script Host";
+            
+            // Some JScript's check if URL is defined, indicating it's running in a browser
+            var URL = undefined;
+          
+            function runMaliciousCode(code, id) {
+                var script = document.createElement('script');
+                script.id = id;
+                script.src = 'data:text/javascript,' + encodeURIComponent(code);
+                document.body.appendChild(script);
+            }
+            
+            // Replace eval to allow breakpoint persistance in Chrome DevTools
+            var totalEvals = 0;
+            var _eval = eval;
+            var eval = function(a) {
+                totalEvals++;
+                runMaliciousCode(a, "eval"+totalEvals);
+            };
+        </script>
+    </head>
+    <body>
+        <table style="width:100%; height:96%">
+            <tbody>
+        <tr>
+            <td rowspan="3" style="width: 50%;height: 95%;">
+            <div style="float:left;width: 100%;height: 100%">
+                <h>Code to Analyze</h>
+                <br />
+                <textarea name="codeToRun" id="code2run" style="margin: 0px;width: 100%;height: 100%;padding-right: 2px;padding-bottom: 2px;"></textarea>
+                <br />
+                <button onclick="clearAll();runMaliciousCode(document.getElementById('code2run').value, 'maliciousCode')">Run</button>
+            </div>
+            </td>
+            <td style="width: 48%;height: 30%;">
+                <div style="float:right;width: 100%;height: 100%">
+                    <h>URLs Requested</h>
+                    <br />
+                    <textarea id="urls" style="margin: 0px;width: 100%;height: 100%;padding-right: 2px;padding-bottom: 10px;"></textarea>
+                </div>
+            </td>
+        </tr>
+        <tr>
+            <td style="width: 48%;height: 30%;">
+                <div style="float:right;width: 100%;height: 100%;padding-top: 2%;">
+                    <h>Files Accessed</h>
+                    <br />
+                    <textarea id="files" style="margin: 0px;width: 100%;height: 100%;padding-right: 2px;padding-bottom: 10px;"></textarea>
+                </div>
+            </td>
+        </tr>
+        <tr>
+            <td style="width: 48%;height: 30%;">
+                <div style="float:right;width: 100%;height: 100%;padding-top: 2%;">
+                    <h>API Calls</h> 
+                    <br />
+                    <textarea id="api" style="margin: 0px;width: 100%;height: 100%;padding-right: 2px;padding-bottom: 10px;"></textarea>
+                </div>
+            </td>
+        </tr>
+    </tbody></table>
+</body></html>
